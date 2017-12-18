@@ -114,10 +114,53 @@ private:
         return seastar_supported_features;
     }
 
+    uint64_t setup_features(const hw_config& hw_config) {
+        int64_t seastar_supported_features = VIRTIO_RING_F_INDIRECT_DESC | VIRTIO_NET_F_MRG_RXBUF;
+
+        if ( hw_config.event_index) {
+            seastar_supported_features |= VIRTIO_RING_F_EVENT_IDX;
+        }
+        if ( hw_config.csum_offload) {
+            seastar_supported_features |= VIRTIO_NET_F_CSUM | VIRTIO_NET_F_GUEST_CSUM;
+            _hw_features.tx_csum_l4_offload = true;
+            _hw_features.rx_csum_offload = true;
+        } else {
+            _hw_features.tx_csum_l4_offload = false;
+            _hw_features.rx_csum_offload = false;
+        }
+        if ( hw_config.tso) {
+            seastar_supported_features |= VIRTIO_NET_F_HOST_TSO4;
+            _hw_features.tx_tso = true;
+        } else {
+            _hw_features.tx_tso = false;
+        }
+
+        if ( hw_config.lro) {
+            seastar_supported_features |= VIRTIO_NET_F_GUEST_TSO4;
+            _hw_features.rx_lro = true;
+        } else {
+            _hw_features.rx_lro = false;
+        }
+
+        if ( hw_config.ufo) {
+            seastar_supported_features |= VIRTIO_NET_F_HOST_UFO;
+            seastar_supported_features |= VIRTIO_NET_F_GUEST_UFO;
+            _hw_features.tx_ufo = true;
+        } else {
+            _hw_features.tx_ufo = false;
+        }
+
+        seastar_supported_features |= VIRTIO_NET_F_MAC;
+        return seastar_supported_features;
+    }
+
 public:
     device(boost::program_options::variables_map opts)
        : _opts(opts), _features(setup_features())
        {}
+    device(const hw_config& hw_config)
+        : _features(setup_features(hw_config))
+    {}
     ethernet_address hw_address() override {
         return { 0x12, 0x23, 0x34, 0x56, 0x67, 0x78 };
     }
@@ -1017,6 +1060,11 @@ get_virtio_net_options_description()
 
 std::unique_ptr<net::device> create_virtio_net_device(boost::program_options::variables_map opts) {
     return std::make_unique<virtio::device>(opts);
+}
+
+std::unique_ptr<net::device> create_virtio_net_device(const hw_config& hw_config)
+{
+    return std::make_unique<virtio::device>(hw_config);
 }
 
 }

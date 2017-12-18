@@ -24,11 +24,14 @@
 
 #include <memory>
 #include "net.hh"
+#include "config.hh"
 #include "core/sstring.hh"
 
 namespace seastar {
 
 std::unique_ptr<net::device> create_virtio_net_device(boost::program_options::variables_map opts = boost::program_options::variables_map());
+std::unique_ptr<net::device> create_virtio_net_device(const net::hw_config& hw_config);
+
 boost::program_options::options_description get_virtio_net_options_description();
 
 }

@@ -90,10 +90,7 @@ void create_native_net_device(boost::program_options::variables_map opts) {
 	            dev = create_dpdk_net_device(hw_config);
 	        } else 
 #endif  
-            {
-                (void)hw_config;        
-                std::runtime_error("only DPDK supports new configuration format"); 
-            }
+                dev = create_virtio_net_device(hw_config);
         }
     }
 
