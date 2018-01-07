@@ -158,9 +158,10 @@ public:
     device(boost::program_options::variables_map opts)
        : _opts(opts), _features(setup_features())
        {}
-    device(const hw_config& hw_config)
-        : _features(setup_features(hw_config))
-    {}
+    device(const std::pair<std::string, net::device_config>& device_config)
+           : net::device(device_config.first), _features(setup_features(device_config.second.hw_cfg))
+
+       {}
     ethernet_address hw_address() override {
         return { 0x12, 0x23, 0x34, 0x56, 0x67, 0x78 };
     }
@@ -796,7 +797,8 @@ static std::unique_ptr<char[], free_deleter> virtio_buffer(size_t size) {
 }
 
 qp::qp(device* dev, size_t rx_ring_size, size_t tx_ring_size)
-    : _dev(dev)
+    : net::qp(dev->name())
+    , _dev(dev)
     , _txq_storage(virtio_buffer(vring_storage_size(tx_ring_size)))
     , _rxq_storage(virtio_buffer(vring_storage_size(rx_ring_size)))
     , _txq(*this, txq_config(tx_ring_size))
@@ -864,7 +866,11 @@ qp_vhost::qp_vhost(device *dev, boost::program_options::variables_map opts)
     : qp(dev, config_ring_size(opts), config_ring_size(opts))
     , _vhost_fd(file_desc::open("/dev/vhost-net", O_RDWR))
 {
-    auto tap_device = opts["tap-device"].as<std::string>();
+    auto tap_device = dev->name();
+    if(tap_device.empty()){
+        tap_device = opts["tap-device"].as<std::string>();
+    }
+
     int64_t vhost_supported_features;
     _vhost_fd.ioctl(VHOST_GET_FEATURES, vhost_supported_features);
     vhost_supported_features &= _dev->features();
@@ -1017,10 +1023,6 @@ qp_osv::qp_osv(device *dev, osv::assigned_virtio &virtio,
 #endif
 
 std::unique_ptr<net::qp> device::init_local_queue(boost::program_options::variables_map opts, uint16_t qid) {
-    static bool called = false;
-    assert(!qid);
-    assert(!called);
-    called = true;
 
 #ifdef HAVE_OSV
     if (osv::assigned_virtio::get && osv::assigned_virtio::get()) {
@@ -1062,9 +1064,9 @@ std::unique_ptr<net::device> create_virtio_net_device(boost::program_options::va
     return std::make_unique<virtio::device>(opts);
 }
 
-std::unique_ptr<net::device> create_virtio_net_device(const hw_config& hw_config)
+std::unique_ptr<net::device> create_virtio_net_device(const std::pair<std::string, net::device_config>& device_config)
 {
-    return std::make_unique<virtio::device>(hw_config);
+    return std::make_unique<virtio::device>(device_config);
 }
 
 }

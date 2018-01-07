@@ -39,6 +39,7 @@ public:
 };
 
 proxy_net_device::proxy_net_device(unsigned cpu, device* dev) :
+        qp(dev->name()),
         _cpu(cpu),
         _dev(dev)
 {

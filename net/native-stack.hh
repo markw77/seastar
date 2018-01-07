@@ -30,6 +30,7 @@ namespace seastar {
 namespace net {
 
 void create_native_stack(boost::program_options::variables_map opts, std::shared_ptr<device> dev);
+void create_native_stacks(boost::program_options::variables_map opts, const std::vector<std::shared_ptr<device>>& dev);
 
 }
 

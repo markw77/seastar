@@ -221,12 +221,18 @@ class qp {
     circular_buffer<packet> _tx_packetq;
 
 protected:
+    const std::string _device_name;
     const std::string _stats_plugin_name;
     const std::string _queue_name;
     metrics::metric_groups _metrics;
     qp_stats _stats;
 
 public:
+    qp( const std::string& device_name,
+       bool register_copy_stats = false,
+       const std::string stats_plugin_name = std::string("network"),
+       uint8_t qid = 0);
+
     qp(bool register_copy_stats = false,
        const std::string stats_plugin_name = std::string("network"),
        uint8_t qid = 0);
@@ -259,10 +265,15 @@ class device {
 protected:
     std::unique_ptr<qp*[]> _queues;
     size_t _rss_table_bits = 0;
+    const std::string _name;
 public:
-    device() {
-        _queues = std::make_unique<qp*[]>(smp::count);
+    device(const std::string& name) : _name(name) {
+           _queues = std::make_unique<qp*[]>(smp::count);
     }
+
+    device() : device("") {
+    }
+
     virtual ~device() {};
     qp& queue_for_cpu(unsigned cpu) { return *_queues[cpu]; }
     qp& local_queue() { return queue_for_cpu(engine().cpu_id()); }
@@ -293,6 +304,9 @@ public:
         // not necessary be true in the future
         return forward_dst(hash2qid(hash), [hash] { return hash; });
     }
+    virtual const std::string& name() {
+           return _name;
+       }
 };
 
 }

@@ -30,7 +30,7 @@
 namespace seastar {
 
 std::unique_ptr<net::device> create_virtio_net_device(boost::program_options::variables_map opts = boost::program_options::variables_map());
-std::unique_ptr<net::device> create_virtio_net_device(const net::hw_config& hw_config);
+std::unique_ptr<net::device> create_virtio_net_device(const std::pair<std::string, net::device_config>& device_config);
 
 boost::program_options::options_description get_virtio_net_options_description();
 

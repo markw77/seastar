@@ -64,67 +64,117 @@ void create_native_net_device(boost::program_options::variables_map opts) {
         net_config << fs.rdbuf();
     }
 
-    std::unique_ptr<device> dev;
-
     if ( deprecated_config_used) {
-#ifdef HAVE_DPDK
-        if ( opts.count("dpdk-pmd")) {
-             dev = create_dpdk_net_device(opts["dpdk-port-index"].as<unsigned>(), smp::count,
-                !(opts.count("lro") && opts["lro"].as<std::string>() == "off"),
-                !(opts.count("hw-fc") && opts["hw-fc"].as<std::string>() == "off"));   
-       } else 
-#endif  
-        dev = create_virtio_net_device(opts);
-    }
-    else {
-        auto device_configs = parse_config(net_config);
 
-        if ( device_configs.size() > 1) {
-            std::runtime_error("only one network interface is supported");
-        }
+           std::unique_ptr<device> dev;
 
-        for ( auto&& device_config : device_configs) {
-            auto& hw_config = device_config.second.hw_cfg;   
-#ifdef HAVE_DPDK
-            if ( hw_config.port_index || !hw_config.pci_address.empty() ) {
-	            dev = create_dpdk_net_device(hw_config);
-	        } else 
-#endif  
-                dev = create_virtio_net_device(hw_config);
-        }
-    }
+   #ifdef HAVE_DPDK
+           if ( opts.count("dpdk-pmd")) {
+                dev = create_dpdk_net_device(opts["dpdk-port-index"].as<unsigned>(), smp::count,
+                   !(opts.count("lro") && opts["lro"].as<std::string>() == "off"),
+                   !(opts.count("hw-fc") && opts["hw-fc"].as<std::string>() == "off"));
+          } else
+   #endif
+           dev = create_virtio_net_device(opts);
 
-    auto sem = std::make_shared<semaphore>(0);
-    std::shared_ptr<device> sdev(dev.release());
-    for (unsigned i = 0; i < smp::count; i++) {
-        smp::submit_to(i, [opts, sdev] {
-            uint16_t qid = engine().cpu_id();
-            if (qid < sdev->hw_queues_count()) {
-                auto qp = sdev->init_local_queue(opts, qid);
-                std::map<unsigned, float> cpu_weights;
-                for (unsigned i = sdev->hw_queues_count() + qid % sdev->hw_queues_count(); i < smp::count; i+= sdev->hw_queues_count()) {
-                    cpu_weights[i] = 1;
+           auto sem = std::make_shared<semaphore>(0);
+           std::shared_ptr<device> sdev(dev.release());
+           for (unsigned i = 0; i < smp::count; i++) {
+               smp::submit_to(i, [opts, sdev] {
+                   uint16_t qid = engine().cpu_id();
+                   if (qid < sdev->hw_queues_count()) {
+                       auto qp = sdev->init_local_queue(opts, qid);
+                       std::map<unsigned, float> cpu_weights;
+                       for (unsigned i = sdev->hw_queues_count() + qid % sdev->hw_queues_count(); i < smp::count; i+= sdev->hw_queues_count()) {
+                           std::cout << "i " << i << std::endl;
+
+                           cpu_weights[i] = 1;
+                       }
+                       cpu_weights[qid] = opts["hw-queue-weight"].as<float>();
+                       qp->configure_proxies(cpu_weights);
+                       sdev->set_local_queue(std::move(qp));
+                   } else {
+                       auto master = qid % sdev->hw_queues_count();
+                       sdev->set_local_queue(create_proxy_net_device(master, sdev.get()));
+                   }
+               }).then([sem] {
+                   sem->signal();
+               });
+           }
+           sem->wait(smp::count).then([opts, sdev] {
+               sdev->link_ready().then([opts, sdev] {
+                   for (unsigned i = 0; i < smp::count; i++) {
+                       smp::submit_to(i, [opts, sdev] {
+                           create_native_stack(opts, sdev);
+                       });
+                   }
+               });
+           });
+       }
+       else {
+
+           std::vector<std::shared_ptr<device>> devs;
+
+           auto device_configs = parse_config(net_config);
+
+           for ( auto&& device_config : device_configs) {
+
+   #ifdef HAVE_DPDK
+               if ( device_config.second.hw_cfg.port_index || !device_config.second.hw_cfg.pci_address.empty() ) {
+                   devs.emplace_back(create_dpdk_net_device(device_config.second.hw_cfg));
+               } else
+   #endif
+                   devs.emplace_back(create_virtio_net_device(device_config));
+           }
+
+           auto all_queues_ready = std::make_shared<semaphore>(0);
+
+           for(auto&& sdev : devs) {
+               for (unsigned i = 0; i < smp::count; i++) {
+                   smp::submit_to(i, [opts, sdev] {
+                       uint16_t qid = engine().cpu_id();
+                       if (qid < sdev->hw_queues_count()) {
+                           auto qp = sdev->init_local_queue(opts, qid);
+                           std::map<unsigned, float> cpu_weights;
+                           for (unsigned i = sdev->hw_queues_count() + qid % sdev->hw_queues_count(); i < smp::count; i+= sdev->hw_queues_count()) {
+                               cpu_weights[i] = 1;
+                           }
+                           cpu_weights[qid] = opts["hw-queue-weight"].as<float>();
+                           qp->configure_proxies(cpu_weights);
+                           sdev->set_local_queue(std::move(qp));
+
+                       } else {
+                           auto master = qid % sdev->hw_queues_count();
+                           sdev->set_local_queue(create_proxy_net_device(master, sdev.get()));
+                       }
+
+                   }).then([all_queues_ready] {
+                       all_queues_ready->signal();
+                   });
+
+               }
+           }
+
+           auto all_links_ready = std::make_shared<semaphore>(0);
+
+           all_queues_ready->wait(devs.size()).then([all_links_ready, devs] {
+               for(auto&& sdev : devs) {
+                       sdev->link_ready().then([all_links_ready] {
+                       all_links_ready->signal();
+                   });
+               }
+           });
+
+           all_links_ready->wait(devs.size()).then([opts, devs] {
+               for (unsigned i = 0; i < smp::count; i++) {
+
+                   smp::submit_to(i, [opts, devs] {
+                       create_native_stacks(opts, devs);
+                   });
                 }
-                cpu_weights[qid] = opts["hw-queue-weight"].as<float>();
-                qp->configure_proxies(cpu_weights);
-                sdev->set_local_queue(std::move(qp));
-            } else {
-                auto master = qid % sdev->hw_queues_count();
-                sdev->set_local_queue(create_proxy_net_device(master, sdev.get()));
-            }
-        }).then([sem] {
-            sem->signal();
-        });
-    }
-    sem->wait(smp::count).then([opts, sdev] {
-        sdev->link_ready().then([opts, sdev] {
-            for (unsigned i = 0; i < smp::count; i++) {
-                smp::submit_to(i, [opts, sdev] {
-                    create_native_stack(opts, sdev);
-                });
-            }
-        });
-    });
+           });
+       }
+
 }
 
 // native_network_stack
@@ -285,6 +335,22 @@ void create_native_stack(boost::program_options::variables_map opts, std::shared
     native_network_stack::ready_promise.set_value(std::unique_ptr<network_stack>(std::make_unique<native_network_stack>(opts, std::move(dev))));
 }
 
+
+std::vector<std::unique_ptr<network_stack>> network_stacks;
+
+void create_native_stacks(boost::program_options::variables_map opts, const std::vector<std::shared_ptr<seastar::net::device>>& devs) {
+
+
+    for(auto&& sdev : devs) {
+
+        network_stacks.emplace_back(std::make_unique<native_network_stack>(opts, std::move(sdev)));
+
+    }
+    native_network_stack::ready_promise.set_value(std::move(network_stacks[devs.size() -1]));
+
+
+}
+
 boost::program_options::options_description nns_options() {
     boost::program_options::options_description opts(
             "Native networking stack options");
@@ -316,6 +382,8 @@ boost::program_options::options_description nns_options() {
         ("lro",
                 boost::program_options::value<std::string>()->default_value("on"),
                 "Enable LRO")
+        ("net-config",boost::program_options::value<std::string>(),"network configuration")
+        ("net-config-file",boost::program_options::value<std::string>(),"network configuration file")
         ;
 
     add_native_net_options_description(opts);
